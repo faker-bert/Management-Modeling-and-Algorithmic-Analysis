@@ -1,0 +1,73 @@
+#include "model/Consumer.h"
+
+#include <algorithm>
+#include <cmath>
+#include <memory>
+#include <utility>
+
+#include "ModelRun.h"
+#include "acclimate.h"
+#include "model/Model.h"
+#include "model/PurchasingManager.h"
+#include "model/Region.h"
+#include "model/Storage.h"
+#include "parameters.h"
+
+namespace acclimate {
+
+Consumer::Consumer(id_t id_p, Region* region_p) : EconomicAgent(std::move(id_p), region_p, EconomicAgent::type_t::CONSUMER) {}
+
+void Consumer::iterate_consumption_and_production() {
+    debug::assertstep(this, IterationStep::CONSUMPTION_AND_PRODUCTION);
+    for (const auto& is : input_storages) {
+        Flow possible_used_flow_U_hat = is->get_possible_use_U_hat();  // Price(U_hat) = Price of used flow
+        Price reservation_price(0.0);
+        if (possible_used_flow_U_hat.get_quantity() > 0.0) {
+            // we have to purchase with the average price of input and storage
+            reservation_price = possible_used_flow_U_hat.get_price();
+        } else {  // possible used flow is zero
+            Price last_reservation_price = is->desired_used_flow_U_tilde(this).get_price();
+            assert(!isnan(last_reservation_price));
+            // price is calculated from last desired used flow
+            reservation_price = last_reservation_price;
+            model()->run()->event(EventType::NO_CONSUMPTION, this, to_float(last_reservation_price));
+        }
+        assert(reservation_price > 0.0);
+
+        const Flow desired_used_flow_U_tilde = Flow(round(is->initial_input_flow_I_star().get_quantity() * forcing_m
+                                                          * pow(reservation_price / Price(1.0), is->parameters().consumption_price_elasticity)),
+                                                    reservation_price);
+        const Flow used_flow_U = Flow(std::min(desired_used_flow_U_tilde.get_quantity(), possible_used_flow_U_hat.get_quantity()), reservation_price);
+        is->set_desired_used_flow_U_tilde(desired_used_flow_U_tilde);
+        is->use_content_S(round(used_flow_U));
+        region->add_consumption_flow_Y(round(used_flow_U));
+        is->iterate_consumption_and_production();
+    }
+}
+
+void Consumer::iterate_expectation() { debug::assertstep(this, IterationStep::EXPECTATION); }
+
+void Consumer::iterate_purchase() {
+    debug::assertstep(this, IterationStep::PURCHASE);
+    for (const auto& is : input_storages) {
+        is->purchasing_manager->iterate_purchase();
+    }
+}
+
+void Consumer::iterate_investment() {
+    // debug::assertstep(this, IterationStep::INVESTMENT);
+    // for (const auto& is : input_storages) {
+    //     is->purchasing_manager->iterate_investment();
+    // }
+}
+
+void Consumer::debug_print_details() const {
+    if constexpr (options::DEBUGGING) {
+        log::info(this);
+        for (const auto& is : input_storages) {
+            is->purchasing_manager->debug_print_details();
+        }
+    }
+}
+
+}  // namespace acclimate
